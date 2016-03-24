@@ -408,7 +408,7 @@ int igraph_layout_grid_3d(const igraph_t *graph, igraph_matrix_t *res,
 
  void Divide_homogeneo(int N,int P,int *esc)
 {
-  int Col,R,K,alpha,Faltan,sumar,Asignados,counter;
+  int Col,R,K,alpha,Faltan,sumar,counter;
   double temp;
   Col=0;
   alpha=N*(N-1)/(2*P); //tasks por core
@@ -421,13 +421,13 @@ int igraph_layout_grid_3d(const igraph_t *graph, igraph_matrix_t *res,
 
   while(Faltan>0)
     {
- 
       K=(N-1-Col);
       temp=K*K-2.0*(double)alpha;
       if(temp>=0)
 	{
 	  R=(double)K-sqrt(temp)+sumar;
 	  Faltan-=(R*(2*K-R)/2);
+          printf("(%d)",(R*(2*K-R)/2));
 	}
       else
 	{
@@ -443,8 +443,10 @@ int igraph_layout_grid_3d(const igraph_t *graph, igraph_matrix_t *res,
 	sumar=0;
 
       esc[counter]=Col;
+      printf(" %d |",Col);
       counter++;
     }
+      printf("\n");
 }
 
 int igraph_layout_fruchterman_reingold(const igraph_t *graph, igraph_matrix_t *res,
@@ -460,7 +462,7 @@ int igraph_layout_fruchterman_reingold(const igraph_t *graph, igraph_matrix_t *r
   long int i,j,k;
 
   
-  #define NUMCORES 6 
+  #define NUMCORES 1 
   pthread_t threads[NUMCORES];
   
   int rc;
@@ -472,7 +474,6 @@ int igraph_layout_fruchterman_reingold(const igraph_t *graph, igraph_matrix_t *r
   
   
   igraph_matrix_t dxdy=IGRAPH_MATRIX_NULL;
-  igraph_eit_t edgeit;
   igraph_integer_t from, to;
   
   if (weight && igraph_vector_size(weight) != igraph_ecount(graph)) {
@@ -506,14 +507,15 @@ int igraph_layout_fruchterman_reingold(const igraph_t *graph, igraph_matrix_t *r
 
   int num_links=igraph_ecount(graph);
   igraph_eit_t edgeiterator[NUMCORES];
-  to=-1;
+  to=0;
   for (k=0; k < NUMCORES; k++) {
      from = to +1;
      to = num_links*(k+1)/NUMCORES;
-     printf("from=%d,to=%d\n",from,to); 
-      IGRAPH_CHECK(igraph_eit_create(graph, igraph_ess_seq(from, to), &edgeiterator[k]));
+     printf("from=%d,to=%d,",from-1,to-1); 
+      IGRAPH_CHECK(igraph_eit_create(graph, igraph_ess_seq(from-1, to-1), &edgeiterator[k]));
       IGRAPH_FINALLY(igraph_eit_destroy, &edgeiterator[k]);
-  }  
+  } 
+     printf("\n"); 
 
  
   frk=sqrt(area/no_of_nodes);
@@ -569,20 +571,6 @@ void *Hilo(void *Proc) {
     }
     /* Calculate the attractive "force" */
 
-    /* desde numerodehiloe * nedged/numerodecores hasta num+1 * edges/cores */
-
-    /*deberia crearlo a partir de 
-int igraph_es_seq(igraph_es_t *es, igraph_integer_t from, igraph_integer_t to);
-O CALCULARLOS EN EL ROOT UNA SOLA VEZ, 
-
-    */
-
-   /** al principal, crear los nodos 
-    edgeit_abs[0]=IGRAPH_EIT_RESET(edgeit);
-	for(i=1;i<NC;i++)
-	edgeit_abs[i]= 
-   */
-   
     igraph_eit_t edgeit=edgeiterator[numerodehilo];
     igraph_integer_t from, to;
  
@@ -617,7 +605,7 @@ O CALCULARLOS EN EL ROOT UNA SOLA VEZ,
 
 for(j=0;j<NUMCORES;j++) rc=pthread_create(&threads[j],NULL,Hilo, (void *) j);
 for(j=0;j<NUMCORES;j++) { rc=pthread_join(threads[j],NULL);
-                        /*  printf ("rc=%d\n",rc);*/
+                          if (rc) printf ("error en thread j=%d, rc=%d\n",j,rc);
                           }
 
 
@@ -656,10 +644,13 @@ for(j=0;j<NUMCORES;j++) { rc=pthread_join(threads[j],NULL);
 
   IGRAPH_ALLOW_INTERRUPTION();
   IGRAPH_PROGRESS("Fruchterman-Reingold layout: ", 100.0, NULL);
-  
-  igraph_eit_destroy(&edgeit);
+
+ for (k=0; k < NUMCORES; k++) {
+      igraph_eit_destroy(&edgeiterator[k]);
+  }
+ 
   igraph_matrix_destroy(&dxdy);
-  IGRAPH_FINALLY_CLEAN(2);
+  IGRAPH_FINALLY_CLEAN(2); //2????? Sure?
   
   return 0;
 }
