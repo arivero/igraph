@@ -430,8 +430,9 @@ int igraph_layout_grid_3d(const igraph_t *graph, igraph_matrix_t *res,
           printf("(%d)",(R*(2*K-R)/2));
 	}
       else
-	{
+	{ 
 	  R=N-Col;
+          printf("(%d)",Faltan);
 	  Faltan=0;
 	}
 
@@ -462,10 +463,12 @@ int igraph_layout_fruchterman_reingold(const igraph_t *graph, igraph_matrix_t *r
   long int i,j,k;
 
   
-  #define NUMCORES 80 
+  #define NUMCORES 8 
   pthread_t threads[NUMCORES];
-  pthread_mutex_t dxdy_mutex; 
+  pthread_mutex_t dxdy_mutex;
+  pthread_barrier_t  start_loop_barrier; 
   pthread_barrier_t post_reduce_barrier;
+  pthread_barrier_t post_move_barrier;
   
   int rc;
     
@@ -522,25 +525,15 @@ int igraph_layout_fruchterman_reingold(const igraph_t *graph, igraph_matrix_t *r
  
   frk=sqrt(area/no_of_nodes);
 
-
+  pthread_mutex_init(&dxdy_mutex,NULL);
   pthread_barrier_init(&post_reduce_barrier, NULL, NUMCORES);
-  for(i=niter;i>0;i--) {
-    /* Report progress in approx. every 100th step */
-    if (i%10 == 0)
-      IGRAPH_PROGRESS("Fruchterman-Reingold layout: ",
-		      100.0-100.0*i/niter, NULL);
-    
-    /* Set the temperature (maximum move/iteration) */
-    t=maxdelta*pow(i/(double)niter,coolexp);
-    /* Clear the deltas */
-    igraph_matrix_null(&dxdy);
-    /* Increment deltas for each undirected pair */
-
-    /*****verificar si faltan cosas aqui */ 
+  pthread_barrier_init(&start_loop_barrier, NULL, 1+NUMCORES);
+  pthread_barrier_init(&post_move_barrier, NULL, 1+NUMCORES);
 
 
 
-    
+
+
 /*========================================================================*/    
 
 void *Hilo(void *Proc) {
@@ -550,7 +543,8 @@ void *Hilo(void *Proc) {
  
     long numerodehilo;
     numerodehilo = (long) Proc;
-    
+    while(i>0) {    
+    pthread_barrier_wait(&start_loop_barrier);
     for(j=escalera[numerodehilo];j<escalera[numerodehilo+1];j++) {
       for(k=j+1;k<no_of_nodes;k++){
         /* Obtain difference vector */
@@ -594,6 +588,7 @@ void *Hilo(void *Proc) {
         yd/=ded;
         af=ded*ded/frk*w;
       } else {
+        /*printf("Node Colision!!");*/
         xd=RNG_NORMAL(0,0.1);
         yd=RNG_NORMAL(0,0.1);
         af=RNG_NORMAL(0,0.1);
@@ -604,17 +599,18 @@ void *Hilo(void *Proc) {
       MATRIX(dxdy, k, 1 + 2 + numerodehilo*2)+=yd*af;
       IGRAPH_EIT_NEXT(edgeit);
     }
-   
+   /*printf("locking %d",numerodehilo);*/ 
    pthread_mutex_lock(&dxdy_mutex);
     for(j=0;j<no_of_nodes;j++){
        /*consolidar MATRIX dxdy*/ /***esto es el REDUCE :-) ***/
           MATRIX(dxdy, j, 0) += MATRIX(dxdy, j, 2+ 2*numerodehilo);
           MATRIX(dxdy, j, 1) += MATRIX(dxdy, j, 2+ 2*numerodehilo);
     }
-
+   /*printf("unlocking %d",numerodehilo);*/
    pthread_mutex_unlock(&dxdy_mutex);
+   /*printf("barrw %d",numerodehilo);*/
    pthread_barrier_wait(&post_reduce_barrier);  
-
+   /*printf("barr pass %d",numerodehilo);*/
 
     /* Dampen motion, if needed, and move the points */   
     for(j=numerodehilo*no_of_nodes/NUMCORES;j<(numerodehilo+1)*no_of_nodes/NUMCORES;j++){
@@ -638,16 +634,34 @@ void *Hilo(void *Proc) {
         MATRIX(*res, j, 1) = VECTOR(*maxy)[j];
       }
   }
+  pthread_barrier_wait(&post_move_barrier);
+  }
   return NULL;
 }
 /*======================================================================*/
 
+
 for(j=0;j<NUMCORES;j++) rc=pthread_create(&threads[j],NULL,Hilo, (void *) j);
+  i=niter;
+  while (i>0) {
+    /* Report progress in approx. every 100th step */
+    if (i%10 == 0)
+      IGRAPH_PROGRESS("Fruchterman-Reingold layout: ",
+		      100.0-100.0*i/niter, NULL);
+    
+    /* Set the temperature (maximum move/iteration) */
+    t=maxdelta*pow(i/(double)niter,coolexp);
+    /* Clear the deltas */
+    igraph_matrix_null(&dxdy);
+    pthread_barrier_wait(&start_loop_barrier);
+    i-=1;
+    pthread_barrier_wait(&post_move_barrier);
+    IGRAPH_ALLOW_INTERRUPTION();
+  }
+
 for(j=0;j<NUMCORES;j++) { rc=pthread_join(threads[j],NULL);
                           if (rc) printf ("error en thread j=%d, rc=%d\n",j,rc);
                           }
-   IGRAPH_ALLOW_INTERRUPTION();
-  }
 
   IGRAPH_PROGRESS("Fruchterman-Reingold layout: ", 100.0, NULL);
 
@@ -656,7 +670,7 @@ for(j=0;j<NUMCORES;j++) { rc=pthread_join(threads[j],NULL);
   }
  
   igraph_matrix_destroy(&dxdy);
-  IGRAPH_FINALLY_CLEAN(2); //2????? Sure?
+  IGRAPH_FINALLY_CLEAN(NUMCORES+1); //the matrix and all the edge sequences
   
   return 0;
 }
