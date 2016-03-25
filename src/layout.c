@@ -458,12 +458,14 @@ int igraph_layout_fruchterman_reingold(const igraph_t *graph, igraph_matrix_t *r
 				       const igraph_vector_t *maxx,
 				       const igraph_vector_t *miny,
 				       const igraph_vector_t *maxy) {
-  igraph_real_t frk,t,ded;
+  igraph_real_t frk,t;
   long int i,j,k;
 
   
-  #define NUMCORES 1 
+  #define NUMCORES 80 
   pthread_t threads[NUMCORES];
+  pthread_mutex_t dxdy_mutex; 
+  pthread_barrier_t post_reduce_barrier;
   
   int rc;
     
@@ -503,7 +505,7 @@ int igraph_layout_fruchterman_reingold(const igraph_t *graph, igraph_matrix_t *r
   if (!use_seed) {
     IGRAPH_CHECK(igraph_layout_random(graph, res));
   }
-  IGRAPH_MATRIX_INIT_FINALLY(&dxdy, no_of_nodes, 2 * NUMCORES);
+  IGRAPH_MATRIX_INIT_FINALLY(&dxdy, no_of_nodes, 2+2 * NUMCORES);
 
   int num_links=igraph_ecount(graph);
   igraph_eit_t edgeiterator[NUMCORES];
@@ -520,6 +522,8 @@ int igraph_layout_fruchterman_reingold(const igraph_t *graph, igraph_matrix_t *r
  
   frk=sqrt(area/no_of_nodes);
 
+
+  pthread_barrier_init(&post_reduce_barrier, NULL, NUMCORES);
   for(i=niter;i>0;i--) {
     /* Report progress in approx. every 100th step */
     if (i%10 == 0)
@@ -540,12 +544,13 @@ int igraph_layout_fruchterman_reingold(const igraph_t *graph, igraph_matrix_t *r
 /*========================================================================*/    
 
 void *Hilo(void *Proc) {
-    int i,j,k;
+    int j,k;
     igraph_real_t ded,xd,yd; /*t podriamos usarlo para no relanzar hilo?? */
     igraph_real_t rf,af;
  
     long numerodehilo;
     numerodehilo = (long) Proc;
+    
     for(j=escalera[numerodehilo];j<escalera[numerodehilo+1];j++) {
       for(k=j+1;k<no_of_nodes;k++){
         /* Obtain difference vector */
@@ -563,10 +568,10 @@ void *Hilo(void *Proc) {
           yd=RNG_NORMAL(0,0.1);
           rf=RNG_NORMAL(0,0.1);
         }
-        MATRIX(dxdy, j, 0 + numerodehilo*2)+=xd*rf; /* Add to the position change vector */
-        MATRIX(dxdy, k, 0 + numerodehilo*2)-=xd*rf;
-        MATRIX(dxdy, j, 1 + numerodehilo*2)+=yd*rf;
-        MATRIX(dxdy, k, 1 + numerodehilo*2)-=yd*rf;
+        MATRIX(dxdy, j, 0 + 2+ numerodehilo*2)+=xd*rf; /* Add to the position change vector */
+        MATRIX(dxdy, k, 0 + 2 + numerodehilo*2)-=xd*rf;
+        MATRIX(dxdy, j, 1 + 2 + numerodehilo*2)+=yd*rf;
+        MATRIX(dxdy, k, 1 + 2 + numerodehilo*2)-=yd*rf;
       }
     }
     /* Calculate the attractive "force" */
@@ -593,33 +598,26 @@ void *Hilo(void *Proc) {
         yd=RNG_NORMAL(0,0.1);
         af=RNG_NORMAL(0,0.1);
       }
-      MATRIX(dxdy, j, 0 + numerodehilo*2)-=xd*af; /* Add to the position change vector */
-      MATRIX(dxdy, k, 0 + numerodehilo*2)+=xd*af;
-      MATRIX(dxdy, j, 1 + numerodehilo*2)-=yd*af;
-      MATRIX(dxdy, k, 1 + numerodehilo*2)+=yd*af;
+      MATRIX(dxdy, j, 0 + 2 + numerodehilo*2)-=xd*af; /* Add to the position change vector */
+      MATRIX(dxdy, k, 0 + 2 + numerodehilo*2)+=xd*af;
+      MATRIX(dxdy, j, 1 + 2 + numerodehilo*2)-=yd*af;
+      MATRIX(dxdy, k, 1 + 2 + numerodehilo*2)+=yd*af;
       IGRAPH_EIT_NEXT(edgeit);
     }
-  return NULL;
-}
-/*======================================================================*/
-
-for(j=0;j<NUMCORES;j++) rc=pthread_create(&threads[j],NULL,Hilo, (void *) j);
-for(j=0;j<NUMCORES;j++) { rc=pthread_join(threads[j],NULL);
-                          if (rc) printf ("error en thread j=%d, rc=%d\n",j,rc);
-                          }
-
-
+   
+   pthread_mutex_lock(&dxdy_mutex);
     for(j=0;j<no_of_nodes;j++){
        /*consolidar MATRIX dxdy*/ /***esto es el REDUCE :-) ***/
-       for (k=1;k<NUMCORES; k++) {
-          MATRIX(dxdy, j, 0) += MATRIX(dxdy, j, 2*k);
-          MATRIX(dxdy, j, 1) += MATRIX(dxdy, j, 2*k+1);
-         }
+          MATRIX(dxdy, j, 0) += MATRIX(dxdy, j, 2+ 2*numerodehilo);
+          MATRIX(dxdy, j, 1) += MATRIX(dxdy, j, 2+ 2*numerodehilo);
     }
+
+   pthread_mutex_unlock(&dxdy_mutex);
+   pthread_barrier_wait(&post_reduce_barrier);  
 
 
     /* Dampen motion, if needed, and move the points */   
-    for(j=0;j<no_of_nodes;j++){
+    for(j=numerodehilo*no_of_nodes/NUMCORES;j<(numerodehilo+1)*no_of_nodes/NUMCORES;j++){
       ded=sqrt(MATRIX(dxdy, j, 0)*MATRIX(dxdy, j, 0)+
 	       MATRIX(dxdy, j, 1)*MATRIX(dxdy, j, 1));    
       if(ded>t){		/* Dampen to t */
@@ -639,10 +637,18 @@ for(j=0;j<NUMCORES;j++) { rc=pthread_join(threads[j],NULL);
       } else if (maxy && MATRIX(*res, j, 1) > VECTOR(*maxy)[j]) {
         MATRIX(*res, j, 1) = VECTOR(*maxy)[j];
       }
-    }
+  }
+  return NULL;
+}
+/*======================================================================*/
+
+for(j=0;j<NUMCORES;j++) rc=pthread_create(&threads[j],NULL,Hilo, (void *) j);
+for(j=0;j<NUMCORES;j++) { rc=pthread_join(threads[j],NULL);
+                          if (rc) printf ("error en thread j=%d, rc=%d\n",j,rc);
+                          }
+   IGRAPH_ALLOW_INTERRUPTION();
   }
 
-  IGRAPH_ALLOW_INTERRUPTION();
   IGRAPH_PROGRESS("Fruchterman-Reingold layout: ", 100.0, NULL);
 
  for (k=0; k < NUMCORES; k++) {
