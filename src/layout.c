@@ -447,7 +447,7 @@ int igraph_layout_fruchterman_reingold(const igraph_t *graph, igraph_matrix_t *r
 				       const igraph_vector_t *maxx,
 				       const igraph_vector_t *miny,
 				       const igraph_vector_t *maxy) {
-  igraph_real_t frk,t;
+  igraph_real_t frk,frk2,t,epsilon;
   long int i,j,k;
 
   
@@ -505,15 +505,16 @@ int igraph_layout_fruchterman_reingold(const igraph_t *graph, igraph_matrix_t *r
   to=0;
   for (k=0; k < NUMCORES; k++) {
      from = to +1;
-     to = num_links*(k+1)/NUMCORES;
+     to = (num_links*(k+1))/NUMCORES;
     // printf("from=%d,to=%d,",from-1,to-1); 
       IGRAPH_CHECK(igraph_eit_create(graph, igraph_ess_seq(from-1, to-1), &edgeiterator[k]));
       IGRAPH_FINALLY(igraph_eit_destroy, &edgeiterator[k]);
   } 
    //  printf("\n"); 
 
- 
-  frk=sqrt(area/no_of_nodes);
+  epsilon=1E-6;
+  frk2=area/no_of_nodes; 
+  frk=sqrt(frk2);
 
   pthread_mutex_init(&dxdy_mutex,NULL);
   pthread_spin_init(&dxdy_spin, 0);
@@ -530,7 +531,7 @@ int igraph_layout_fruchterman_reingold(const igraph_t *graph, igraph_matrix_t *r
 void *Hilo(void *Proc) {
     int j,k;
 //int i=1000;
-    igraph_real_t ded,xd,yd; /*t podriamos usarlo para no relanzar hilo?? */
+    igraph_real_t ded,ded2,xd,yd; /*t podriamos usarlo para no relanzar hilo?? */
     igraph_real_t rf,af;
     long long pasos = 0; 
     long numerodehilo;
@@ -548,18 +549,10 @@ void *Hilo(void *Proc) {
         /* Obtain difference vector */
         xd=MATRIX(*res, j, 0)-MATRIX(*res, k, 0);
         yd=MATRIX(*res, j, 1)-MATRIX(*res, k, 1);
-        ded=sqrt(xd*xd+yd*yd);  /* Get dyadic euclidean distance */
-        if (ded != 0) {
-          xd/=ded;                      /*Rescale differences to length 1*/
-          yd/=ded;
-          /*Calculate repulsive "force"*/
-          rf=frk*frk*(1.0/ded-ded*ded/repulserad);
-	      } else {
-          /* ded is exactly zero. Use some small random displacement. */
-          xd=RNG_NORMAL(0,0.1);
-          yd=RNG_NORMAL(0,0.1);
-          rf=RNG_NORMAL(0,0.1);
-        }
+        ded2=(xd*xd+yd*yd+epsilon);  /* Get dyadic euclidean distance */
+        ded=sqrt(ded2);
+          /*Calculate repulsive "force"*/ /*Rescale differences to length 1*/
+          rf=frk2*(1.0/ded2-ded/repulserad);
         MATRIX(dxdy, j, 0 + 2+ numerodehilo*2)+=xd*rf; /* Add to the position change vector */
         MATRIX(dxdy, k, 0 + 2 + numerodehilo*2)-=xd*rf;
         MATRIX(dxdy, j, 1 + 2 + numerodehilo*2)+=yd*rf;
@@ -580,16 +573,9 @@ void *Hilo(void *Proc) {
       k=to;
       xd=MATRIX(*res, j, 0)-MATRIX(*res, k, 0);
       yd=MATRIX(*res, j, 1)-MATRIX(*res, k, 1);
-      ded=sqrt(xd*xd+yd*yd);  /* Get dyadic euclidean distance */
-      if (ded != 0) {
-        xd/=ded;                /* Rescale differences to length 1 */
-        yd/=ded;
-        af=ded*ded/frk*w;
-      } else {
-        xd=RNG_NORMAL(0,0.1);
-        yd=RNG_NORMAL(0,0.1);
-        af=RNG_NORMAL(0,0.1);
-      }
+      ded2=(epsilon+xd*xd+yd*yd);  /* Get dyadic euclidean distance */
+      ded=sqrt(ded2); 
+        af=ded/frk*w;   /* we divide by ded to Rescale differences to length 1 */
       MATRIX(dxdy, j, 0 + 2 + numerodehilo*2)-=xd*af; /* Add to the position change vector */
       MATRIX(dxdy, k, 0 + 2 + numerodehilo*2)+=xd*af;
       MATRIX(dxdy, j, 1 + 2 + numerodehilo*2)-=yd*af;
@@ -614,7 +600,7 @@ void *Hilo(void *Proc) {
    /*printf("barr pass %d",numerodehilo);*/
 
     /* Dampen motion, if needed, and move the points */   
-    for(j=numerodehilo*no_of_nodes/NUMCORES;j<(numerodehilo+1)*no_of_nodes/NUMCORES;j++){
+    for(j=(numerodehilo*no_of_nodes)/NUMCORES;j<((numerodehilo+1)*no_of_nodes)/NUMCORES;j++){
       ded=sqrt(MATRIX(dxdy, j, 0)*MATRIX(dxdy, j, 0)+
 	       MATRIX(dxdy, j, 1)*MATRIX(dxdy, j, 1));    
       if(ded>t){		/* Dampen to t */
@@ -648,6 +634,7 @@ for(j=0;j<NUMCORES;j++){ rc=pthread_create(&threads[j],NULL,Hilo, (void *) j);
                          if (rc) printf ("error creando thread j=%d, rc=%d\n",j,rc);
                           }
 
+///MAIN LOOP
   while (i>0) {
     /* Report progress in approx. every 100th step */
     if (i%10 == 0)
@@ -664,6 +651,7 @@ for(j=0;j<NUMCORES;j++){ rc=pthread_create(&threads[j],NULL,Hilo, (void *) j);
     pthread_barrier_wait(&post_move_barrier);
     IGRAPH_ALLOW_INTERRUPTION();
   }
+///END LOOP
 
 for(j=0;j<NUMCORES;j++) { rc=pthread_join(threads[j],NULL);
                           if (rc) printf ("error en thread j=%d, rc=%d\n",j,rc);
