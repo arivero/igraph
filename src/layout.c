@@ -407,47 +407,35 @@ int igraph_layout_grid_3d(const igraph_t *graph, igraph_matrix_t *res,
 
 
  void Divide_homogeneo(int N,int P,int *esc)
-{
-  int Col,R,K,alpha,Faltan,sumar,counter;
-  double temp;
+{ 
+  long long int Col,R,K,alpha,suma,counter;
   Col=0;
+  R=0;
+  K=0;
   alpha=N*(N-1)/(2*P); //tasks por core
-  Faltan=N*(N-1)/2; //task totales
+  //Faltan=N*(N-1)/2; //task totales
  
-  sumar=1;  //Para el redondeo: mejor empezar con redondeo por arriba.
+  /*asumimos que no caben dos tramos en la misma columna, esto es
+    alpha > (N-1)/2, usease N > P */
+
+  suma=0;  
   counter=0;
   esc[0]=0;
   counter++;
-
-  while(Faltan>0)
-    {
-      K=(N-1-Col);
-      temp=K*K-2.0*(double)alpha;
-      if(temp>=0)
-	{
-	  R=(double)K-sqrt(temp)+sumar;
-	  Faltan-=(R*(2*K-R)/2);
-          printf("(%d)",(R*(2*K-R)/2));
-	}
-      else
-	{ 
-	  R=N-Col;
-          printf("(%d)",Faltan);
-	  Faltan=0;
-	}
-
-      Col+=R;
- 
-      if(Faltan>alpha*counter)
-	sumar=1;//-sumar;
-      else
-	sumar=0;
-
-      esc[counter]=Col;
-      printf(" %d |",Col);
-      counter++;
-    }
-      printf("\n");
+  
+  while (Col < N) {
+     Col +=1;
+     suma += N-Col; /*se quita tambien el diagonal*/
+     R+=N-Col;
+     if (suma >= counter*N*(N-1)/(2*P) )
+       { esc[counter]=Col;
+         //printf(" (%d) %d |",R,Col);
+         if (R>K) { K=R;};
+         counter++;
+         R=0;
+       }
+     }
+  //printf("%d/%d=%f\n",K,alpha,(K*1.0)/alpha);
 }
 
 int igraph_layout_fruchterman_reingold(const igraph_t *graph, igraph_matrix_t *res,
@@ -465,7 +453,9 @@ int igraph_layout_fruchterman_reingold(const igraph_t *graph, igraph_matrix_t *r
   
   #define NUMCORES 8 
   pthread_t threads[NUMCORES];
-  pthread_mutex_t dxdy_mutex;
+  pthread_mutex_t dxdy_mutex; // el PTHREAD_ADAPTIVE_MUTEX_INITIALIZER_NP no es mas rapido; 
+   //la alternativa a spinlockes PTHREAD_MUTEX_ADAPTIVE_NP http://stackoverflow.com/questions/19863734/what-is-pthread-mutex-adaptive-np
+  pthread_spinlock_t dxdy_spin;
   pthread_barrier_t  start_loop_barrier; 
   pthread_barrier_t post_reduce_barrier;
   pthread_barrier_t post_move_barrier;
@@ -516,17 +506,18 @@ int igraph_layout_fruchterman_reingold(const igraph_t *graph, igraph_matrix_t *r
   for (k=0; k < NUMCORES; k++) {
      from = to +1;
      to = num_links*(k+1)/NUMCORES;
-     printf("from=%d,to=%d,",from-1,to-1); 
+    // printf("from=%d,to=%d,",from-1,to-1); 
       IGRAPH_CHECK(igraph_eit_create(graph, igraph_ess_seq(from-1, to-1), &edgeiterator[k]));
       IGRAPH_FINALLY(igraph_eit_destroy, &edgeiterator[k]);
   } 
-     printf("\n"); 
+   //  printf("\n"); 
 
  
   frk=sqrt(area/no_of_nodes);
 
   pthread_mutex_init(&dxdy_mutex,NULL);
-  pthread_barrier_init(&post_reduce_barrier, NULL, NUMCORES);
+  pthread_spin_init(&dxdy_spin, 0);
+  pthread_barrier_init(&post_reduce_barrier, NULL, 1+NUMCORES);
   pthread_barrier_init(&start_loop_barrier, NULL, 1+NUMCORES);
   pthread_barrier_init(&post_move_barrier, NULL, 1+NUMCORES);
 
@@ -538,15 +529,22 @@ int igraph_layout_fruchterman_reingold(const igraph_t *graph, igraph_matrix_t *r
 
 void *Hilo(void *Proc) {
     int j,k;
+//int i=1000;
     igraph_real_t ded,xd,yd; /*t podriamos usarlo para no relanzar hilo?? */
     igraph_real_t rf,af;
- 
+    long long pasos = 0; 
     long numerodehilo;
     numerodehilo = (long) Proc;
-    while(i>0) {    
-    pthread_barrier_wait(&start_loop_barrier);
+    //printf("hilo %d\n",numerodehilo);
+    while(i>0) {
+//i=i-1; 
+    pasos=0; 
+    //printf("hilo %d..\n",numerodehilo);  
+//    pthread_barrier_wait(&start_loop_barrier);
+    //printf("hilo de %d a %d\n",escalera[numerodehilo],escalera[numerodehilo+1]);
     for(j=escalera[numerodehilo];j<escalera[numerodehilo+1];j++) {
       for(k=j+1;k<no_of_nodes;k++){
+        pasos++;
         /* Obtain difference vector */
         xd=MATRIX(*res, j, 0)-MATRIX(*res, k, 0);
         yd=MATRIX(*res, j, 1)-MATRIX(*res, k, 1);
@@ -588,7 +586,6 @@ void *Hilo(void *Proc) {
         yd/=ded;
         af=ded*ded/frk*w;
       } else {
-        /*printf("Node Colision!!");*/
         xd=RNG_NORMAL(0,0.1);
         yd=RNG_NORMAL(0,0.1);
         af=RNG_NORMAL(0,0.1);
@@ -600,14 +597,18 @@ void *Hilo(void *Proc) {
       IGRAPH_EIT_NEXT(edgeit);
     }
    /*printf("locking %d",numerodehilo);*/ 
-   pthread_mutex_lock(&dxdy_mutex);
+   //pthread_mutex_lock(&dxdy_mutex);
+   pthread_spin_lock(&dxdy_spin);
+   //if (i==1){ printf("hilo %d pasos %d \n",numerodehilo,pasos);}
     for(j=0;j<no_of_nodes;j++){
        /*consolidar MATRIX dxdy*/ /***esto es el REDUCE :-) ***/
           MATRIX(dxdy, j, 0) += MATRIX(dxdy, j, 2+ 2*numerodehilo);
-          MATRIX(dxdy, j, 1) += MATRIX(dxdy, j, 2+ 2*numerodehilo);
+          MATRIX(dxdy, j, 1) += MATRIX(dxdy, j, 3+ 2*numerodehilo);
     }
+
    /*printf("unlocking %d",numerodehilo);*/
-   pthread_mutex_unlock(&dxdy_mutex);
+   //pthread_mutex_unlock(&dxdy_mutex);
+   pthread_spin_unlock(&dxdy_spin);
    /*printf("barrw %d",numerodehilo);*/
    pthread_barrier_wait(&post_reduce_barrier);  
    /*printf("barr pass %d",numerodehilo);*/
@@ -634,15 +635,19 @@ void *Hilo(void *Proc) {
         MATRIX(*res, j, 1) = VECTOR(*maxy)[j];
       }
   }
-  pthread_barrier_wait(&post_move_barrier);
+   pthread_barrier_wait(&post_move_barrier);
   }
   return NULL;
 }
 /*======================================================================*/
 
+i=niter;
+igraph_matrix_null(&dxdy);
 
-for(j=0;j<NUMCORES;j++) rc=pthread_create(&threads[j],NULL,Hilo, (void *) j);
-  i=niter;
+for(j=0;j<NUMCORES;j++){ rc=pthread_create(&threads[j],NULL,Hilo, (void *) j);
+                         if (rc) printf ("error creando thread j=%d, rc=%d\n",j,rc);
+                          }
+
   while (i>0) {
     /* Report progress in approx. every 100th step */
     if (i%10 == 0)
@@ -651,10 +656,11 @@ for(j=0;j<NUMCORES;j++) rc=pthread_create(&threads[j],NULL,Hilo, (void *) j);
     
     /* Set the temperature (maximum move/iteration) */
     t=maxdelta*pow(i/(double)niter,coolexp);
+//    pthread_barrier_wait(&start_loop_barrier);
+    pthread_barrier_wait(&post_reduce_barrier);
+    i-=1;
     /* Clear the deltas */
     igraph_matrix_null(&dxdy);
-    pthread_barrier_wait(&start_loop_barrier);
-    i-=1;
     pthread_barrier_wait(&post_move_barrier);
     IGRAPH_ALLOW_INTERRUPTION();
   }
@@ -670,8 +676,15 @@ for(j=0;j<NUMCORES;j++) { rc=pthread_join(threads[j],NULL);
   }
  
   igraph_matrix_destroy(&dxdy);
-  IGRAPH_FINALLY_CLEAN(NUMCORES+1); //the matrix and all the edge sequences
-  
+  IGRAPH_FINALLY_CLEAN(NUMCORES+1); //the matrix and all the edge sequences?? only the edge sequences? None?
+
+  //pthread_mutex_destroy(&dxdy_mutex);
+  pthread_barrier_destroy(&post_reduce_barrier);
+  pthread_barrier_destroy(&start_loop_barrier);
+  pthread_barrier_destroy(&post_move_barrier);
+
+ 
+  //printf("exit fr\n"); 
   return 0;
 }
 
