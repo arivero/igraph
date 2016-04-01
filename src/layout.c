@@ -461,7 +461,8 @@ int igraph_layout_fruchterman_reingold(const igraph_t *graph, igraph_matrix_t *r
   pthread_spinlock_t dxdy_spin;
   pthread_barrier_t post_reduce_barrier;
   pthread_barrier_t post_move_barrier;
-  
+  pthread_barrier_t loop_barrier;
+ 
   int rc;
     
   long int no_of_nodes=igraph_vcount(graph);
@@ -537,12 +538,12 @@ int igraph_layout_fruchterman_reingold(const igraph_t *graph, igraph_matrix_t *r
   frk=sqrt(frk2);
 
   pthread_spin_init(&dxdy_spin, 0);
-  if (NUMCORES > 1) {
-  pthread_barrier_init(&post_reduce_barrier, NULL, 1+NUMCORES);
+  pthread_barrier_init(&post_reduce_barrier, NULL, NUMCORES);
   pthread_barrier_init(&post_move_barrier, NULL, 1+NUMCORES);
+  if (NUMCORES > 1) {
+  pthread_barrier_init(&loop_barrier, NULL, 1+NUMCORES);
   } else {
-  pthread_barrier_init(&post_reduce_barrier, NULL, 1);
-  pthread_barrier_init(&post_move_barrier, NULL, 1);
+  pthread_barrier_init(&loop_barrier, NULL, 1);
   }
 
 /*========================================================================*/    
@@ -644,8 +645,12 @@ void *Hilo(void *Proc) {
         MATRIX(*res, j, 1) = VECTOR(*maxy)[j];
       }
   }
-   if (MONOHILO) igraph_matrix_null(&dxdy);
-   pthread_barrier_wait(&post_move_barrier);
+   if (MONOHILO) { 
+      igraph_matrix_null(&dxdy);
+   } else { 
+      pthread_barrier_wait(&post_move_barrier);
+   }
+   pthread_barrier_wait(&loop_barrier);
   }
   return NULL;
 }
@@ -663,10 +668,10 @@ if (NUMCORES > 1) {
     if (i%10 == 0)
       IGRAPH_PROGRESS("Fruchterman-Reingold layout: ",
 		      100.0-100.0*i/niter, NULL);
-   pthread_barrier_wait(&post_reduce_barrier);
-      /* Clear the deltas */
-      igraph_matrix_null(&dxdy);
+   /* Clear the deltas */
    pthread_barrier_wait(&post_move_barrier);
+   igraph_matrix_null(&dxdy);
+   pthread_barrier_wait(&loop_barrier);
    IGRAPH_ALLOW_INTERRUPTION();
   }
   for(j=0;j<NUMCORES;j++) { rc=pthread_join(threads[j],NULL);
@@ -688,7 +693,7 @@ if (NUMCORES > 1) {
   //pthread_mutex_destroy(&dxdy_mutex);
   pthread_barrier_destroy(&post_reduce_barrier);
   pthread_barrier_destroy(&post_move_barrier);
-
+  pthread_barrier_destroy(&loop_barrier);
  
   //printf("exit fr\n"); 
   return 0;
