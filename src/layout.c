@@ -451,8 +451,8 @@ int igraph_layout_fruchterman_reingold(const igraph_t *graph, igraph_matrix_t *r
 				       const igraph_vector_t *maxx,
 				       const igraph_vector_t *miny,
 				       const igraph_vector_t *maxy) {
-  igraph_real_t frk,frk2,t,epsilon;
-  long int i,j,k,icopy;
+  igraph_real_t frk,frk2,epsilon;
+  long int i,j,k;
   FILE *salida;
   
   int NUMCORES; 
@@ -537,9 +537,13 @@ int igraph_layout_fruchterman_reingold(const igraph_t *graph, igraph_matrix_t *r
   frk=sqrt(frk2);
 
   pthread_spin_init(&dxdy_spin, 0);
+  if (NUMCORES > 1) {
   pthread_barrier_init(&post_reduce_barrier, NULL, 1+NUMCORES);
   pthread_barrier_init(&post_move_barrier, NULL, 1+NUMCORES);
-
+  } else {
+  pthread_barrier_init(&post_reduce_barrier, NULL, 1);
+  pthread_barrier_init(&post_move_barrier, NULL, 1);
+  }
 
 /*========================================================================*/    
 
@@ -547,6 +551,7 @@ void *Hilo(void *Proc) {
     int i,j,k;
     igraph_real_t ded,ded2,xd,yd; /*t podriamos usarlo para no relanzar hilo?? */
     igraph_real_t rf,af;
+    igraph_real_t t;
     long long int pasos ; 
     long numerodehilo;
     numerodehilo = (long) Proc;
@@ -605,14 +610,16 @@ void *Hilo(void *Proc) {
        /*consolidar MATRIX dxdy*/ /***esto es el REDUCE :-) ***/
           MATRIX(dxdy, j, 0) += MATRIX(dxdy, j, 2+ 2*numerodehilo);
           MATRIX(dxdy, j, 1) += MATRIX(dxdy, j, 3+ 2*numerodehilo);
+          //podria borrarse dxdy aqui en parte...
     }
    pthread_spin_unlock(&dxdy_spin);
-   if (!MONOHILO) pthread_barrier_wait(&post_reduce_barrier);  
+   pthread_barrier_wait(&post_reduce_barrier);  
    /*printf("barr pass %d",numerodehilo);*/
 
     /* Dampen motion, if needed, and move the points */
 
-    if (MONOHILO) t=maxdelta*pow(i/(double)niter,coolexp);
+    /* Set the temperature (maximum move/iteration) */
+    t=maxdelta*pow(i/(double)niter,coolexp);
        
     for(j=(numerodehilo*no_of_nodes)/NUMCORES;j<((numerodehilo+1)*no_of_nodes)/NUMCORES;j++){
      //if (icopy==1) printf(" %d-%d ",numerodehilo,j);
@@ -625,6 +632,7 @@ void *Hilo(void *Proc) {
       }
       MATRIX(*res, j, 0)+=MATRIX(dxdy, j, 0); /* Update positions */
       MATRIX(*res, j, 1)+=MATRIX(dxdy, j, 1);
+           //... y aqui se podria borrar el resto de dxdy
       if (minx && MATRIX(*res, j, 0) < VECTOR(*minx)[j]) {
         MATRIX(*res, j, 0) = VECTOR(*minx)[j];
       } else if (maxx && MATRIX(*res, j, 0) > VECTOR(*maxx)[j]) {
@@ -636,9 +644,8 @@ void *Hilo(void *Proc) {
         MATRIX(*res, j, 1) = VECTOR(*maxy)[j];
       }
   }
-  /*we could consider waiting for join and create again instead of this post_move_barrier*/
-   if (!MONOHILO)  pthread_barrier_wait(&post_move_barrier);
-   if (MONOHILO) igraph_matrix_null(&dxdy); 
+   if (MONOHILO) igraph_matrix_null(&dxdy);
+   pthread_barrier_wait(&post_move_barrier);
   }
   return NULL;
 }
@@ -648,32 +655,25 @@ i=niter;
 igraph_matrix_null(&dxdy);
 
 if (NUMCORES > 1) {
-for(j=0;j<NUMCORES;j++){ rc=pthread_create(&threads[j],NULL,Hilo, (void *) j);
+  for(j=0;j<NUMCORES;j++){ rc=pthread_create(&threads[j],NULL,Hilo, (void *) j);
                          if (rc) printf ("error creando thread j=%d, rc=%d\n",j,rc);
                           }
-///MAIN LOOP
-  i=niter;
-  while (i>0) {
+  for (i=niter;i>0;i--) {
     /* Report progress in approx. every 100th step */
     if (i%10 == 0)
       IGRAPH_PROGRESS("Fruchterman-Reingold layout: ",
 		      100.0-100.0*i/niter, NULL);
-    icopy=i; 
-    /* Set the temperature (maximum move/iteration) */
-    t=maxdelta*pow(i/(double)niter,coolexp);
-    pthread_barrier_wait(&post_reduce_barrier);
-   i--;
-    /* Clear the deltas */
-   igraph_matrix_null(&dxdy);
+   pthread_barrier_wait(&post_reduce_barrier);
+      /* Clear the deltas */
+      igraph_matrix_null(&dxdy);
    pthread_barrier_wait(&post_move_barrier);
    IGRAPH_ALLOW_INTERRUPTION();
   }
-///END LOOP
-for(j=0;j<NUMCORES;j++) { rc=pthread_join(threads[j],NULL);
+  for(j=0;j<NUMCORES;j++) { rc=pthread_join(threads[j],NULL);
                           if (rc) printf ("error en thread j=%d, rc=%d\n",j,rc);
                           }
 } else {
- Hilo(0);
+  Hilo(0);
 }
 
   IGRAPH_PROGRESS("Fruchterman-Reingold layout: ", 100.0, NULL);
