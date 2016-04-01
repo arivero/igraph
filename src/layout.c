@@ -406,12 +406,13 @@ int igraph_layout_grid_3d(const igraph_t *graph, igraph_matrix_t *res,
  */
 
 
- void Divide_homogeneo(int N,int P,int *casillaJ, int *casillaK, int *steps)
+ void Divide_homogeneo(int N,int P,int *casillaJ, int *casillaK, long long int *steps)
 { 
   long long int alpha,resto;
   int j,k,Col,counter;
-  alpha=(N*(N-1))/(2*P); //tasks por core
-  resto=(N*(N-1))/2 - alpha * P; 
+  
+  alpha=((long long int)N*(N-1))/(2*(long long int)P); //tasks por core
+  resto=((long long int)N*(N-1))/2 - alpha * (long long int)P; 
   for (counter=0; counter < P; counter++) {
     steps[counter]=alpha;
     if (counter<resto) { steps[counter] += 1;}
@@ -423,11 +424,12 @@ int igraph_layout_grid_3d(const igraph_t *graph, igraph_matrix_t *res,
   Col=0;
   while (counter < P)
   {
-   if (Col==0){
+   if (Col==0){   //should be while Col==0 and counter < P
        casillaJ[counter]=j;
        casillaK[counter]=k;
        Col=steps[counter];
-       //printf("%d (%d): %d,%d \n",counter,steps[counter],casillaJ[counter],casillaK[counter]);
+       //Note there is a bug here if steps[counter] is 0
+       //printf("%d (%ld): %d,%d \n",counter,steps[counter],casillaJ[counter],casillaK[counter]);
        counter++;
     }
    k+=1;
@@ -451,10 +453,9 @@ int igraph_layout_fruchterman_reingold(const igraph_t *graph, igraph_matrix_t *r
 				       const igraph_vector_t *maxy) {
   igraph_real_t frk,frk2,t,epsilon;
   long int i,j,k,icopy;
-
+  FILE *salida;
   
-  #define NUMCORES 8 
-  pthread_t threads[NUMCORES];
+  int NUMCORES; 
   //pthread_mutex_t dxdy_mutex; // el PTHREAD_ADAPTIVE_MUTEX_INITIALIZER_NP no es mas rapido; 
    //la alternativa a spinlockes PTHREAD_MUTEX_ADAPTIVE_NP http://stackoverflow.com/questions/19863734/what-is-pthread-mutex-adaptive-np
   pthread_spinlock_t dxdy_spin;
@@ -465,9 +466,24 @@ int igraph_layout_fruchterman_reingold(const igraph_t *graph, igraph_matrix_t *r
     
   long int no_of_nodes=igraph_vcount(graph);
 
+  if (no_of_nodes<60) 
+	NUMCORES=1;
+  else 
+     { 
+	if (no_of_nodes< 500) 
+	NUMCORES=4;
+       	else 
+	NUMCORES=12;
+     }
+
+	salida=fopen("/tmp/numcores.dat","wt");
+	fprintf(salida,"n=%d, numcores=%d\n",no_of_nodes,NUMCORES);
+	fclose(salida);
+
+  pthread_t threads[NUMCORES];
   int escaleraJ[NUMCORES];
   int escaleraK[NUMCORES];
-  int escalones[NUMCORES];
+  long long int escalones[NUMCORES];
   Divide_homogeneo(no_of_nodes,NUMCORES, escaleraJ,escaleraK,escalones);
   
   
@@ -530,7 +546,7 @@ void *Hilo(void *Proc) {
     int j,k;
     igraph_real_t ded,ded2,xd,yd; /*t podriamos usarlo para no relanzar hilo?? */
     igraph_real_t rf,af;
-    long long pasos ; 
+    long long int pasos ; 
     long numerodehilo;
     numerodehilo = (long) Proc;
     //printf("hilo %d\n",numerodehilo);
