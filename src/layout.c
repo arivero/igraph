@@ -450,15 +450,14 @@ int igraph_layout_fruchterman_reingold(const igraph_t *graph, igraph_matrix_t *r
 				       const igraph_vector_t *miny,
 				       const igraph_vector_t *maxy) {
   igraph_real_t frk,frk2,t,epsilon;
-  long int i,j,k;
+  long int i,j,k,icopy;
 
   
-  #define NUMCORES 1 
+  #define NUMCORES 8 
   pthread_t threads[NUMCORES];
-  pthread_mutex_t dxdy_mutex; // el PTHREAD_ADAPTIVE_MUTEX_INITIALIZER_NP no es mas rapido; 
+  //pthread_mutex_t dxdy_mutex; // el PTHREAD_ADAPTIVE_MUTEX_INITIALIZER_NP no es mas rapido; 
    //la alternativa a spinlockes PTHREAD_MUTEX_ADAPTIVE_NP http://stackoverflow.com/questions/19863734/what-is-pthread-mutex-adaptive-np
   pthread_spinlock_t dxdy_spin;
-  pthread_barrier_t  start_loop_barrier; 
   pthread_barrier_t post_reduce_barrier;
   pthread_barrier_t post_move_barrier;
   
@@ -510,8 +509,8 @@ int igraph_layout_fruchterman_reingold(const igraph_t *graph, igraph_matrix_t *r
   for (k=0; k < NUMCORES; k++) {
      from = to +1;
      to = (num_links*(k+1))/NUMCORES;
-    // printf("from=%d,to=%d,",from-1,to-1); 
-      IGRAPH_CHECK(igraph_eit_create(graph, igraph_ess_seq(from-1, to-1), &edgeiterator[k]));
+     //printf("from=%d,to=%d,",from-1,to-1); 
+      IGRAPH_CHECK(igraph_eit_create(graph, igraph_ess_seq(from-1, to), &edgeiterator[k]));
       IGRAPH_FINALLY(igraph_eit_destroy, &edgeiterator[k]);
   } 
    //  printf("\n"); 
@@ -538,7 +537,7 @@ void *Hilo(void *Proc) {
     while(i>0) {
     j=escaleraJ[numerodehilo];            
     k=escaleraK[numerodehilo];
-    for(pasos=escalones[numerodehilo];pasos>0;pasos--) { 
+    for(pasos=escalones[numerodehilo];pasos>0;pasos--) {
         k++;
         if (k == no_of_nodes) 
           {   j++;
@@ -562,10 +561,12 @@ void *Hilo(void *Proc) {
     igraph_integer_t from, to;
  
     IGRAPH_EIT_RESET(edgeit); /*sin rset, avanza de uno en uno */
+    //if (i==1) printf("%d",IGRAPH_EIT_SIZE(edgeit));
     while (!IGRAPH_EIT_END(edgeit)) {
       long int edge=IGRAPH_EIT_GET(edgeit);
       igraph_real_t w= weight ? VECTOR(*weight)[ edge ] : 1.0;
       igraph_edge(graph, (igraph_integer_t) edge, &from, &to);
+      //if (i==1) printf("from=%d,to=%d\n",from,to);
       j=from; 
       k=to;
       xd=MATRIX(*res, j, 0)-MATRIX(*res, k, 0);
@@ -587,11 +588,12 @@ void *Hilo(void *Proc) {
           MATRIX(dxdy, j, 1) += MATRIX(dxdy, j, 3+ 2*numerodehilo);
     }
    pthread_spin_unlock(&dxdy_spin);
-   pthread_barrier_wait(&post_reduce_barrier);  
+   if (NUMCORES > 1) pthread_barrier_wait(&post_reduce_barrier);  
    /*printf("barr pass %d",numerodehilo);*/
 
     /* Dampen motion, if needed, and move the points */   
     for(j=(numerodehilo*no_of_nodes)/NUMCORES;j<((numerodehilo+1)*no_of_nodes)/NUMCORES;j++){
+     //if (icopy==1) printf(" %d-%d ",numerodehilo,j);
       ded=sqrt(MATRIX(dxdy, j, 0)*MATRIX(dxdy, j, 0)+
 	       MATRIX(dxdy, j, 1)*MATRIX(dxdy, j, 1));    
       if(ded>t){		/* Dampen to t */
@@ -612,7 +614,10 @@ void *Hilo(void *Proc) {
         MATRIX(*res, j, 1) = VECTOR(*maxy)[j];
       }
   }
-   pthread_barrier_wait(&post_move_barrier);
+  /*we could consider waiting for join and create again instead of this post_move_barrier*/
+   if (NUMCORES > 1)  pthread_barrier_wait(&post_move_barrier);
+   if (NUMCORES == 1) i--;
+   if (NUMCORES == 1)  igraph_matrix_null(&dxdy); 
   }
   return NULL;
 }
@@ -631,15 +636,14 @@ for(j=0;j<NUMCORES;j++){ rc=pthread_create(&threads[j],NULL,Hilo, (void *) j);
     if (i%10 == 0)
       IGRAPH_PROGRESS("Fruchterman-Reingold layout: ",
 		      100.0-100.0*i/niter, NULL);
-    
+    icopy=i; 
     /* Set the temperature (maximum move/iteration) */
     t=maxdelta*pow(i/(double)niter,coolexp);
-//    pthread_barrier_wait(&start_loop_barrier);
-    pthread_barrier_wait(&post_reduce_barrier);
-    i-=1;
+   if (NUMCORES > 1)  pthread_barrier_wait(&post_reduce_barrier);
+   if (NUMCORES > 1)  i-=1;
     /* Clear the deltas */
-    igraph_matrix_null(&dxdy);
-    pthread_barrier_wait(&post_move_barrier);
+   if (NUMCORES > 1)  igraph_matrix_null(&dxdy);
+   if (NUMCORES > 1)  pthread_barrier_wait(&post_move_barrier);
     IGRAPH_ALLOW_INTERRUPTION();
   }
 ///END LOOP
@@ -647,7 +651,6 @@ for(j=0;j<NUMCORES;j++){ rc=pthread_create(&threads[j],NULL,Hilo, (void *) j);
 for(j=0;j<NUMCORES;j++) { rc=pthread_join(threads[j],NULL);
                           if (rc) printf ("error en thread j=%d, rc=%d\n",j,rc);
                           }
-
   IGRAPH_PROGRESS("Fruchterman-Reingold layout: ", 100.0, NULL);
 
  for (k=0; k < NUMCORES; k++) {
