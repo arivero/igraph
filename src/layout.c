@@ -558,8 +558,8 @@ void *Hilo(void *Proc) {
     numerodehilo = (long) Proc;
     igraph_eit_t edgeit=edgeiterator[numerodehilo];
     igraph_integer_t from, to;
-    int /*er, bool*/ MONOHILO;
-    MONOHILO = (NUMCORES==1);
+    //int /*er, bool*/ MONOHILO;
+    //MONOHILO = (NUMCORES==1);
 
     //printf("hilo %d\n",numerodehilo);
     for (i=niter;i>0;i--) {
@@ -610,7 +610,9 @@ void *Hilo(void *Proc) {
     for(j=0;j<no_of_nodes;j++){
        /*consolidar MATRIX dxdy*/ /***esto es el REDUCE :-) ***/
           MATRIX(dxdy, j, 0) += MATRIX(dxdy, j, 2+ 2*numerodehilo);
+          MATRIX(dxdy, j, 2+ 2*numerodehilo)=0;
           MATRIX(dxdy, j, 1) += MATRIX(dxdy, j, 3+ 2*numerodehilo);
+          MATRIX(dxdy, j, 3+ 2*numerodehilo)=0;
           //podria borrarse dxdy aqui en parte...
     }
    pthread_spin_unlock(&dxdy_spin);
@@ -634,6 +636,8 @@ void *Hilo(void *Proc) {
       MATRIX(*res, j, 0)+=MATRIX(dxdy, j, 0); /* Update positions */
       MATRIX(*res, j, 1)+=MATRIX(dxdy, j, 1);
            //... y aqui se podria borrar el resto de dxdy
+      MATRIX(dxdy, j, 0)=0;
+      MATRIX(dxdy, j, 1)=0;
       if (minx && MATRIX(*res, j, 0) < VECTOR(*minx)[j]) {
         MATRIX(*res, j, 0) = VECTOR(*minx)[j];
       } else if (maxx && MATRIX(*res, j, 0) > VECTOR(*maxx)[j]) {
@@ -645,11 +649,11 @@ void *Hilo(void *Proc) {
         MATRIX(*res, j, 1) = VECTOR(*maxy)[j];
       }
   }
-   if (MONOHILO) { 
-      igraph_matrix_null(&dxdy);
-   } else { 
-      pthread_barrier_wait(&post_move_barrier);
-   }
+   //if (MONOHILO) {
+      //igraph_matrix_null(&dxdy);
+   //} else { 
+   //   pthread_barrier_wait(&post_move_barrier);
+   //}
    pthread_barrier_wait(&loop_barrier);
   }
   return NULL;
@@ -669,10 +673,10 @@ if (NUMCORES > 1) {
       IGRAPH_PROGRESS("Fruchterman-Reingold layout: ",
 		      100.0-100.0*i/niter, NULL);
    /* Clear the deltas */
-   pthread_barrier_wait(&post_move_barrier);
-   igraph_matrix_null(&dxdy);
-   pthread_barrier_wait(&loop_barrier);
+   //pthread_barrier_wait(&post_move_barrier);
+   //igraph_matrix_null(&dxdy);
    IGRAPH_ALLOW_INTERRUPTION();
+   pthread_barrier_wait(&loop_barrier);
   }
   for(j=0;j<NUMCORES;j++) { rc=pthread_join(threads[j],NULL);
                           if (rc) printf ("error en thread j=%d, rc=%d\n",j,rc);
