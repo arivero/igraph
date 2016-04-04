@@ -459,9 +459,9 @@ int igraph_layout_fruchterman_reingold(const igraph_t *graph, igraph_matrix_t *r
   //pthread_mutex_t dxdy_mutex; // el PTHREAD_ADAPTIVE_MUTEX_INITIALIZER_NP no es mas rapido; 
    //la alternativa a spinlockes PTHREAD_MUTEX_ADAPTIVE_NP http://stackoverflow.com/questions/19863734/what-is-pthread-mutex-adaptive-np
   pthread_spinlock_t dxdy_spin;
-  pthread_barrier_t post_reduce_barrier;
-  pthread_barrier_t post_move_barrier;
-  pthread_barrier_t loop_barrier;
+  int reduce_barrier=0;
+  int move_barrier=0;
+  int loop_barrier=0;
  
   int rc;
     
@@ -538,13 +538,7 @@ int igraph_layout_fruchterman_reingold(const igraph_t *graph, igraph_matrix_t *r
   frk=sqrt(frk2);
 
   pthread_spin_init(&dxdy_spin, 0);
-  pthread_barrier_init(&post_reduce_barrier, NULL, NUMCORES);
-  pthread_barrier_init(&post_move_barrier, NULL, 1+NUMCORES);
-  if (NUMCORES > 1) {
-  pthread_barrier_init(&loop_barrier, NULL, 1+NUMCORES);
-  } else {
-  pthread_barrier_init(&loop_barrier, NULL, 1);
-  }
+  //pthread_barrier_init(&loop_barrier, NULL, 1);
 
 /*========================================================================*/    
 
@@ -614,7 +608,12 @@ void *Hilo(void *Proc) {
           //podria borrarse dxdy aqui en parte...
     }
    pthread_spin_unlock(&dxdy_spin);
-   pthread_barrier_wait(&post_reduce_barrier);  
+   __sync_bool_compare_and_swap(&reduce_barrier,0,NUMCORES);
+   __sync_fetch_and_sub(&reduce_barrier,1);
+   while (reduce_barrier) {;
+   pthread_yield();
+   }
+
    /*printf("barr pass %d",numerodehilo);*/
 
     /* Dampen motion, if needed, and move the points */
@@ -647,10 +646,19 @@ void *Hilo(void *Proc) {
   }
    if (MONOHILO) { 
       igraph_matrix_null(&dxdy);
-   } else { 
-      pthread_barrier_wait(&post_move_barrier);
-   }
-   pthread_barrier_wait(&loop_barrier);
+   } else {
+    __sync_bool_compare_and_swap(&move_barrier,0,NUMCORES+1);
+    __sync_fetch_and_sub(&move_barrier,1);
+     while (move_barrier) {;
+       pthread_yield();
+     }
+     /*ops happen in main loop */
+     __sync_bool_compare_and_swap(&loop_barrier,0,NUMCORES+1);
+     __sync_fetch_and_sub(&loop_barrier,1);
+     while (loop_barrier) {;
+       pthread_yield();
+     }
+    }
   }
   return NULL;
 }
@@ -669,9 +677,18 @@ if (NUMCORES > 1) {
       IGRAPH_PROGRESS("Fruchterman-Reingold layout: ",
 		      100.0-100.0*i/niter, NULL);
    /* Clear the deltas */
-   pthread_barrier_wait(&post_move_barrier);
-   igraph_matrix_null(&dxdy);
-   pthread_barrier_wait(&loop_barrier);
+    __sync_bool_compare_and_swap(&move_barrier,0,NUMCORES+1);
+    __sync_fetch_and_sub(&move_barrier,1);
+     while (move_barrier) {;
+       pthread_yield();
+     }
+      igraph_matrix_null(&dxdy);
+     /*ops happen in main loop */
+     __sync_bool_compare_and_swap(&loop_barrier,0,NUMCORES+1);
+     __sync_fetch_and_sub(&loop_barrier,1);
+     while (loop_barrier) {;
+       pthread_yield();
+     }
    IGRAPH_ALLOW_INTERRUPTION();
   }
   for(j=0;j<NUMCORES;j++) { rc=pthread_join(threads[j],NULL);
@@ -691,9 +708,7 @@ if (NUMCORES > 1) {
   IGRAPH_FINALLY_CLEAN(NUMCORES+1); //the matrix and all the edge sequences?? only the edge sequences? None?
 
   //pthread_mutex_destroy(&dxdy_mutex);
-  pthread_barrier_destroy(&post_reduce_barrier);
-  pthread_barrier_destroy(&post_move_barrier);
-  pthread_barrier_destroy(&loop_barrier);
+  //pthread_barrier_destroy(&loop_barrier);
  
   //printf("exit fr\n"); 
   return 0;
