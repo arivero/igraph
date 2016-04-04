@@ -46,8 +46,7 @@
 #include "igraph_math.h"
 
 #include <pthread.h>
-#include <assert.h>
-#include <time.h>
+
 /**
  * \section about_layouts
  * 
@@ -457,16 +456,18 @@ int igraph_layout_fruchterman_reingold(const igraph_t *graph, igraph_matrix_t *r
   FILE *salida;
   
   int NUMCORES; 
-  //pthread_mutex_t dxdy_mutex;  
-  //la alternativa a spinlock es PTHREAD_MUTEX_ADAPTIVE_NP http://stackoverflow.com/questions/19863734/what-is-pthread-mutex-adaptive-np
+  //pthread_mutex_t dxdy_mutex; // el PTHREAD_ADAPTIVE_MUTEX_INITIALIZER_NP no es mas rapido; 
+   //la alternativa a spinlockes PTHREAD_MUTEX_ADAPTIVE_NP http://stackoverflow.com/questions/19863734/what-is-pthread-mutex-adaptive-np
   pthread_spinlock_t dxdy_spin;
-  //pthread_barrier_t loop_barrier;
+  pthread_barrier_t post_reduce_barrier;
+  pthread_barrier_t post_move_barrier;
+  pthread_barrier_t loop_barrier;
  
   int rc;
     
   long int no_of_nodes=igraph_vcount(graph);
 
-  if (no_of_nodes<50) 
+  if (no_of_nodes<60) 
 	NUMCORES=1;
   else 
      { 
@@ -536,10 +537,14 @@ int igraph_layout_fruchterman_reingold(const igraph_t *graph, igraph_matrix_t *r
   frk2=area/no_of_nodes; 
   frk=sqrt(frk2);
 
-  //#define cpu_relax() asm volatile("pause\n": : :"memory")
-  volatile int barrier1=0;
-  volatile int barrier2=0;
   pthread_spin_init(&dxdy_spin, 0);
+  pthread_barrier_init(&post_reduce_barrier, NULL, NUMCORES);
+  pthread_barrier_init(&post_move_barrier, NULL, 1+NUMCORES);
+  if (NUMCORES > 1) {
+  pthread_barrier_init(&loop_barrier, NULL, 1+NUMCORES);
+  } else {
+  pthread_barrier_init(&loop_barrier, NULL, 1);
+  }
 
 /*========================================================================*/    
 
@@ -555,6 +560,7 @@ void *Hilo(void *Proc) {
     igraph_integer_t from, to;
     int /*er, bool*/ MONOHILO;
     MONOHILO = (NUMCORES==1);
+
     //printf("hilo %d\n",numerodehilo);
     for (i=niter;i>0;i--) {
     j=escaleraJ[numerodehilo];            
@@ -604,18 +610,11 @@ void *Hilo(void *Proc) {
     for(j=0;j<no_of_nodes;j++){
        /*consolidar MATRIX dxdy*/ /***esto es el REDUCE :-) ***/
           MATRIX(dxdy, j, 0) += MATRIX(dxdy, j, 2+ 2*numerodehilo);
-          MATRIX(dxdy, j, 2+ 2*numerodehilo)=0;
           MATRIX(dxdy, j, 1) += MATRIX(dxdy, j, 3+ 2*numerodehilo);
-          MATRIX(dxdy, j, 3+ 2*numerodehilo)=0;
+          //podria borrarse dxdy aqui en parte...
     }
    pthread_spin_unlock(&dxdy_spin);
-   //pthread_barrier_wait(&post_reduce_barrier);
-   __sync_bool_compare_and_swap(&barrier1,0,NUMCORES+1-MONOHILO); 
-    __sync_fetch_and_sub(&barrier1,1);
-   while (barrier1) {;
-   pthread_yield();
-   }
- 
+   pthread_barrier_wait(&post_reduce_barrier);  
    /*printf("barr pass %d",numerodehilo);*/
 
     /* Dampen motion, if needed, and move the points */
@@ -626,18 +625,15 @@ void *Hilo(void *Proc) {
     for(j=(numerodehilo*no_of_nodes)/NUMCORES;j<((numerodehilo+1)*no_of_nodes)/NUMCORES;j++){
      //if (icopy==1) printf(" %d-%d ",numerodehilo,j);
       ded=sqrt(MATRIX(dxdy, j, 0)*MATRIX(dxdy, j, 0)+
-	       MATRIX(dxdy, j, 1)*MATRIX(dxdy, j, 1));
-      //assert(ded>0);    
+	       MATRIX(dxdy, j, 1)*MATRIX(dxdy, j, 1));    
       if(ded>t){		/* Dampen to t */
         ded=t/ded;
         MATRIX(dxdy, j, 0)*=ded;
         MATRIX(dxdy, j, 1)*=ded;
       }
-      // asumiendo size es ok, usamos un and para borrar el resto de la variable dxdy tras leerla
-      //assert(sizeof(double)==sizeof(long long int));
-      //assert(sizeof(igraph_real_t)==sizeof(double)); 
-      MATRIX(*res, j, 0)+=  /*MATRIX(dxdy, j, 0);*/ (double) __sync_fetch_and_and((long long int *) &((dxdy).data.stor_begin[(dxdy).nrow*(0)+(j)]),  0LL); 
-      MATRIX(*res, j, 1)+=  /*MATRIX(dxdy, j, 1);*/ (double) __sync_fetch_and_and((long long int *) &MATRIX(dxdy, j, 1), (long long int) 0);
+      MATRIX(*res, j, 0)+=MATRIX(dxdy, j, 0); /* Update positions */
+      MATRIX(*res, j, 1)+=MATRIX(dxdy, j, 1);
+           //... y aqui se podria borrar el resto de dxdy
       if (minx && MATRIX(*res, j, 0) < VECTOR(*minx)[j]) {
         MATRIX(*res, j, 0) = VECTOR(*minx)[j];
       } else if (maxx && MATRIX(*res, j, 0) > VECTOR(*maxx)[j]) {
@@ -649,17 +645,12 @@ void *Hilo(void *Proc) {
         MATRIX(*res, j, 1) = VECTOR(*maxy)[j];
       }
   }
-   //if (MONOHILO) {
-      //igraph_matrix_null(&dxdy);
-   //} else { 
-   //   pthread_barrier_wait(&post_move_barrier);
-   //}
-   //pthread_barrier_wait(&loop_barrier);
-   __sync_bool_compare_and_swap(&barrier2,0,NUMCORES+1-MONOHILO);
-   __sync_fetch_and_sub(&barrier2,1);
-   while (barrier2) {;
-     pthread_yield();
+   if (MONOHILO) { 
+      igraph_matrix_null(&dxdy);
+   } else { 
+      pthread_barrier_wait(&post_move_barrier);
    }
+   pthread_barrier_wait(&loop_barrier);
   }
   return NULL;
 }
@@ -677,21 +668,11 @@ if (NUMCORES > 1) {
     if (i%10 == 0)
       IGRAPH_PROGRESS("Fruchterman-Reingold layout: ",
 		      100.0-100.0*i/niter, NULL);
-
-   __sync_bool_compare_and_swap(&barrier1,0,NUMCORES+1);
-   __sync_fetch_and_sub(&barrier1,1);
-   while (barrier1) {;
-   pthread_yield();
-   }
-
+   /* Clear the deltas */
+   pthread_barrier_wait(&post_move_barrier);
+   igraph_matrix_null(&dxdy);
+   pthread_barrier_wait(&loop_barrier);
    IGRAPH_ALLOW_INTERRUPTION();
-   
-   __sync_bool_compare_and_swap(&barrier2,0,NUMCORES+1);
-   __sync_fetch_and_sub(&barrier2,1);
-   while (barrier2) {;
-   pthread_yield();
-   }
-
   }
   for(j=0;j<NUMCORES;j++) { rc=pthread_join(threads[j],NULL);
                           if (rc) printf ("error en thread j=%d, rc=%d\n",j,rc);
@@ -710,7 +691,9 @@ if (NUMCORES > 1) {
   IGRAPH_FINALLY_CLEAN(NUMCORES+1); //the matrix and all the edge sequences?? only the edge sequences? None?
 
   //pthread_mutex_destroy(&dxdy_mutex);
-  //pthread_barrier_destroy(&loop_barrier);
+  pthread_barrier_destroy(&post_reduce_barrier);
+  pthread_barrier_destroy(&post_move_barrier);
+  pthread_barrier_destroy(&loop_barrier);
  
   //printf("exit fr\n"); 
   return 0;
