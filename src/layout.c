@@ -540,7 +540,7 @@ int igraph_layout_fruchterman_reingold(const igraph_t *graph, igraph_matrix_t *r
   pthread_spin_init(&dxdy_spin, 0);
   pthread_barrier_init(&post_reduce_barrier, NULL, NUMCORES);
   if (NUMCORES > 1) {
-  pthread_barrier_init(&loop_barrier, NULL, 1);
+  pthread_barrier_init(&loop_barrier, NULL, NUMCORES+1);
   } else {
   pthread_barrier_init(&loop_barrier, NULL, 1);
   }
@@ -661,15 +661,15 @@ if (NUMCORES > 1) {
   for(j=0;j<NUMCORES;j++){ rc=pthread_create(&threads[j],NULL,Hilo, (void *) j);
                          if (rc) printf ("error creando thread j=%d, rc=%d\n",j,rc);
                           }
-  //for (i=niter;i>0;i--) {
+  for (i=niter;i>0;i--) {
     /* Report progress in approx. every 100th step */
-  //  if (i%10 == 0)
+    if (i%10 == 0)
       IGRAPH_PROGRESS("Fruchterman-Reingold layout: ",
 		      100.0-100.0*i/niter, NULL);
    /* Clear the deltas */
-   //pthread_barrier_wait(&loop_barrier);
-   //IGRAPH_ALLOW_INTERRUPTION();
-   //}
+   pthread_barrier_wait(&loop_barrier);
+   IGRAPH_ALLOW_INTERRUPTION();
+  }
   for(j=0;j<NUMCORES;j++) { rc=pthread_join(threads[j],NULL);
                           if (rc) printf ("error en thread j=%d, rc=%d\n",j,rc);
                           }
