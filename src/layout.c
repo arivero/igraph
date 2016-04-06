@@ -545,15 +545,14 @@ int igraph_layout_fruchterman_reingold(const igraph_t *graph, igraph_matrix_t *r
   pthread_spin_init(&dxdy_spin, 0);
   pthread_mutex_init(&iter_mutex,NULL);
   if (NUMCORES > 1) {
-  pthread_barrier_init(&post_reduce_barrier, NULL, NUMCORES);
   pthread_barrier_init(&loop_barrier, NULL, NUMCORES+1);
   } else {
-  pthread_barrier_init(&post_reduce_barrier, NULL, 1);
   pthread_barrier_init(&loop_barrier, NULL, 1);
   }
 
 
 int loopcounter;
+int tcounter=0;
 
 /*========================================================================*/    
 
@@ -599,17 +598,16 @@ void *Hilo(void *Proc) {
     }
     /* Calculate the attractive "force" */
  
-   //IGRAPH_EIT_RESET(edgeit);
-   pthread_barrier_wait(&loop_barrier);
-   edgeit=0; 
-    //if (i==1) printf("%d",IGRAPH_EIT_SIZE(edgeit));
-   loopcounter=0;
-   pthread_barrier_wait(&post_reduce_barrier);  
+
+   if (__sync_add_and_fetch(&tcounter,1)==NUMCORES) {
+      edgeit=0; 
+      loopcounter=0;
+      tcounter=0;
+   }
+   pthread_barrier_wait(&loop_barrier);  
    /*printf("barr pass %d",numerodehilo);*/
    long int edge;
    for(edge=__sync_fetch_and_add(&edgeit,1);edge < num_links; edge=__sync_fetch_and_add(&edgeit,1)) {
-        //long int edge=edgeit;  //IGRAPH_EIT_GET(edgeit);
-        //edgeit++; //IGRAPH_EIT_NEXT(edgeit);
         igraph_real_t w= weight ? VECTOR(*weight)[ edge ] : 1.0;
         igraph_edge(graph, (igraph_integer_t) edge, &from, &to);
         //if (i==1) printf("from=%d,to=%d\n",from,to);
