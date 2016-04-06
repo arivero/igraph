@@ -456,7 +456,7 @@ int igraph_layout_fruchterman_reingold(const igraph_t *graph, igraph_matrix_t *r
   FILE *salida;
   
   int NUMCORES; 
-  //pthread_mutex_t dxdy_mutex; // el PTHREAD_ADAPTIVE_MUTEX_INITIALIZER_NP no es mas rapido; 
+  pthread_mutex_t iter_mutex; // el PTHREAD_ADAPTIVE_MUTEX_INITIALIZER_NP no es mas rapido; 
    //la alternativa a spinlockes PTHREAD_MUTEX_ADAPTIVE_NP http://stackoverflow.com/questions/19863734/what-is-pthread-mutex-adaptive-np
   pthread_spinlock_t dxdy_spin;
   pthread_barrier_t post_reduce_barrier;
@@ -521,16 +521,21 @@ int igraph_layout_fruchterman_reingold(const igraph_t *graph, igraph_matrix_t *r
   IGRAPH_MATRIX_INIT_FINALLY(&dxdy, no_of_nodes, 2+2 * NUMCORES);
 
   int num_links=igraph_ecount(graph);
-  igraph_eit_t edgeiterator[NUMCORES];
-  to=0;
-  for (k=0; k < NUMCORES; k++) {
-     from = to +1;
-     to = (num_links*(k+1))/NUMCORES;
+  //igraph_eit_t edgeiterator[NUMCORES];
+  //to=0;
+  //for (k=0; k < NUMCORES; k++) {
+  //   from = to +1;
+  //   to = (num_links*(k+1))/NUMCORES;
      //printf("from=%d,to=%d,",from-1,to-1); 
-      IGRAPH_CHECK(igraph_eit_create(graph, igraph_ess_seq(from-1, to), &edgeiterator[k]));
-      IGRAPH_FINALLY(igraph_eit_destroy, &edgeiterator[k]);
-  } 
+  //    IGRAPH_CHECK(igraph_eit_create(graph, igraph_ess_seq(from-1, to), &edgeiterator[k]));
+  //    IGRAPH_FINALLY(igraph_eit_destroy, &edgeiterator[k]);
+  //} 
    //  printf("\n"); 
+  //igraph_eit_t edgeit;
+  long int edgeit;
+  //IGRAPH_CHECK(igraph_eit_create(graph, igraph_ess_seq(0,num_links),&edgeit));
+  //IGRAPH_FINALLY(igraph_eit_destroy, &edgeit);
+
 
   //quizas estas variables deberian declararse dentro del hilo, para que se instalen en su stack?
   epsilon=1E-6;
@@ -538,10 +543,12 @@ int igraph_layout_fruchterman_reingold(const igraph_t *graph, igraph_matrix_t *r
   frk=sqrt(frk2);
 
   pthread_spin_init(&dxdy_spin, 0);
-  pthread_barrier_init(&post_reduce_barrier, NULL, NUMCORES);
+  pthread_mutex_init(&iter_mutex,NULL);
   if (NUMCORES > 1) {
+  pthread_barrier_init(&post_reduce_barrier, NULL, NUMCORES+1);
   pthread_barrier_init(&loop_barrier, NULL, NUMCORES+1);
   } else {
+  pthread_barrier_init(&post_reduce_barrier, NULL, 1);
   pthread_barrier_init(&loop_barrier, NULL, 1);
   }
 
@@ -561,7 +568,7 @@ void *Hilo(void *Proc) {
     //CPU_ZERO(&cpuset);
     //CPU_SET( numerodehilo , &cpuset);
     //sched_setaffinity(0, sizeof(cpuset), &cpuset);
-    igraph_eit_t edgeit=edgeiterator[numerodehilo];
+    //igraph_eit_t edgeit=edgeiterator[numerodehilo];
     igraph_integer_t from, to;
     int /*er, bool*/ MONOHILO;
     MONOHILO = (NUMCORES==1);
@@ -590,41 +597,42 @@ void *Hilo(void *Proc) {
     }
     /* Calculate the attractive "force" */
  
-    IGRAPH_EIT_RESET(edgeit); 
+   //IGRAPH_EIT_RESET(edgeit);
+   edgeit=0; 
     //if (i==1) printf("%d",IGRAPH_EIT_SIZE(edgeit));
-    while (!IGRAPH_EIT_END(edgeit)) {
-      long int edge=IGRAPH_EIT_GET(edgeit);
-      igraph_real_t w= weight ? VECTOR(*weight)[ edge ] : 1.0;
-      igraph_edge(graph, (igraph_integer_t) edge, &from, &to);
-      //if (i==1) printf("from=%d,to=%d\n",from,to);
-      j=from; 
-      k=to;
-      xd=MATRIX(*res, j, 0)-MATRIX(*res, k, 0);
-      yd=MATRIX(*res, j, 1)-MATRIX(*res, k, 1);
-      ded2=(epsilon+xd*xd+yd*yd);  /* Get dyadic euclidean distance */
-      ded=sqrt(ded2); 
-        af=ded/frk*w;   /* we divide by ded to Rescale differences to length 1 */
-      MATRIX(dxdy, j, 0 + 2 + numerodehilo*2)-=xd*af; /* Add to the position change vector */
-      MATRIX(dxdy, k, 0 + 2 + numerodehilo*2)+=xd*af; 
-      MATRIX(dxdy, j, 1 + 2 + numerodehilo*2)-=yd*af;
-      MATRIX(dxdy, k, 1 + 2 + numerodehilo*2)+=yd*af;
-      IGRAPH_EIT_NEXT(edgeit);
-    }
-
    loopcounter=0;
    pthread_barrier_wait(&post_reduce_barrier);  
    /*printf("barr pass %d",numerodehilo);*/
+   long int edge;
+   for(edge=__sync_fetch_and_add(&edgeit,1);edge < num_links; edge=__sync_fetch_and_add(&edgeit,1)) {
+        //long int edge=edgeit;  //IGRAPH_EIT_GET(edgeit);
+        //edgeit++; //IGRAPH_EIT_NEXT(edgeit);
+        igraph_real_t w= weight ? VECTOR(*weight)[ edge ] : 1.0;
+        igraph_edge(graph, (igraph_integer_t) edge, &from, &to);
+        //if (i==1) printf("from=%d,to=%d\n",from,to);
+        j=from;
+        k=to;
+        xd=MATRIX(*res, j, 0)-MATRIX(*res, k, 0);
+        yd=MATRIX(*res, j, 1)-MATRIX(*res, k, 1);
+        ded2=(epsilon+xd*xd+yd*yd);  /* Get dyadic euclidean distance */
+        ded=sqrt(ded2);
+        af=ded/frk*w;   /* we divide by ded to Rescale differences to length 1 */
+        MATRIX(dxdy, j, 0 + 2 + numerodehilo*2)-=xd*af; /* Add to the position change vector */
+        MATRIX(dxdy, k, 0 + 2 + numerodehilo*2)+=xd*af;
+        MATRIX(dxdy, j, 1 + 2 + numerodehilo*2)-=yd*af;
+        MATRIX(dxdy, k, 1 + 2 + numerodehilo*2)+=yd*af;
+    }
 
     /* Dampen motion, if needed, and move the points */
 
     /* Set the temperature (maximum move/iteration) */
     t=maxdelta*pow(i/(double)niter,coolexp);
       
-    for(j=__sync_fetch_and_add(&loopcounter,1);j<no_of_nodes;j=j=__sync_fetch_and_add(&loopcounter,1)){
+    for(j=__sync_fetch_and_add(&loopcounter,1);j<no_of_nodes;j=__sync_fetch_and_add(&loopcounter,1)){
     //for(j=(numerodehilo*no_of_nodes)/NUMCORES;j<((numerodehilo+1)*no_of_nodes)/NUMCORES;j++){
       dxdy0=0;
       dxdy1=0;
-      for (k=0;k<numerodehilo;k++) {
+      for (k=0;k<NUMCORES;k++) {
          dxdy0 += MATRIX(dxdy, j, 2+ 2*k);
          dxdy1 += MATRIX(dxdy, j, 3+ 2*k);
          MATRIX(dxdy, j, 2+ 2*k)=0;
@@ -649,7 +657,7 @@ void *Hilo(void *Proc) {
         MATRIX(*res, j, 1) = VECTOR(*maxy)[j];
       }
   }
-   pthread_barrier_wait(&loop_barrier);
+   //pthread_barrier_wait(&loop_barrier);
   }
   return NULL;
 }
@@ -667,8 +675,7 @@ if (NUMCORES > 1) {
     if (i%10 == 0)
       IGRAPH_PROGRESS("Fruchterman-Reingold layout: ",
 		      100.0-100.0*i/niter, NULL);
-   /* Clear the deltas */
-   pthread_barrier_wait(&loop_barrier);
+   pthread_barrier_wait(&post_reduce_barrier);
    IGRAPH_ALLOW_INTERRUPTION();
   }
   for(j=0;j<NUMCORES;j++) { rc=pthread_join(threads[j],NULL);
@@ -680,14 +687,15 @@ if (NUMCORES > 1) {
 
   IGRAPH_PROGRESS("Fruchterman-Reingold layout: ", 100.0, NULL);
 
- for (k=0; k < NUMCORES; k++) {
-      igraph_eit_destroy(&edgeiterator[k]);
-  }
+ //for (k=0; k < NUMCORES; k++) {
+ //     igraph_eit_destroy(&edgeiterator[k]);
+ // }
+  igraph_eit_destroy(&edgeit);
  
   igraph_matrix_destroy(&dxdy);
   IGRAPH_FINALLY_CLEAN(NUMCORES+1); //the matrix and all the edge sequences?? only the edge sequences? None?
 
-  //pthread_mutex_destroy(&dxdy_mutex);
+  pthread_mutex_destroy(&iter_mutex);
   pthread_barrier_destroy(&post_reduce_barrier);
   pthread_barrier_destroy(&loop_barrier);
  
