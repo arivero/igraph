@@ -622,7 +622,7 @@ void *Hilo(void *Proc) {
      //if (icopy==1) printf(" %d-%d ",numerodehilo,j);
       dxdy0=0;
       dxdy1=0;
-      for (k=0;k<numerodehilo;k++) {
+      for (k=0;k<NUMCORES;k++) {
          dxdy0 += MATRIX(dxdy, j, 2+ 2*k);
          dxdy1 += MATRIX(dxdy, j, 3+ 2*k);
          MATRIX(dxdy, j, 2+ 2*k)=0;
