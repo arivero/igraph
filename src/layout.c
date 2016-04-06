@@ -552,11 +552,13 @@ int igraph_layout_fruchterman_reingold(const igraph_t *graph, igraph_matrix_t *r
   pthread_barrier_init(&loop_barrier, NULL, 1);
   }
 
+
+int loopcounter;
+
 /*========================================================================*/    
 
 void *Hilo(void *Proc) {
     int i,j,k;
-    int loopcounter;
     igraph_real_t ded,ded2,xd,yd; /*t podriamos usarlo para no relanzar hilo?? */
     igraph_real_t rf,af;
     igraph_real_t t;
