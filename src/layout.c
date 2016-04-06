@@ -549,6 +549,7 @@ int igraph_layout_fruchterman_reingold(const igraph_t *graph, igraph_matrix_t *r
 
 void *Hilo(void *Proc) {
     int i,j,k;
+    int loopcounter;
     igraph_real_t ded,ded2,xd,yd; /*t podriamos usarlo para no relanzar hilo?? */
     igraph_real_t rf,af;
     igraph_real_t t;
@@ -604,12 +605,13 @@ void *Hilo(void *Proc) {
       ded=sqrt(ded2); 
         af=ded/frk*w;   /* we divide by ded to Rescale differences to length 1 */
       MATRIX(dxdy, j, 0 + 2 + numerodehilo*2)-=xd*af; /* Add to the position change vector */
-      MATRIX(dxdy, k, 0 + 2 + numerodehilo*2)+=xd*af; /*podriamos usar + 2*(!MONOHILO) + para ahorrar copia */
+      MATRIX(dxdy, k, 0 + 2 + numerodehilo*2)+=xd*af; 
       MATRIX(dxdy, j, 1 + 2 + numerodehilo*2)-=yd*af;
       MATRIX(dxdy, k, 1 + 2 + numerodehilo*2)+=yd*af;
       IGRAPH_EIT_NEXT(edgeit);
     }
 
+   loopcounter=0;
    pthread_barrier_wait(&post_reduce_barrier);  
    /*printf("barr pass %d",numerodehilo);*/
 
@@ -617,9 +619,9 @@ void *Hilo(void *Proc) {
 
     /* Set the temperature (maximum move/iteration) */
     t=maxdelta*pow(i/(double)niter,coolexp);
-       
-    for(j=(numerodehilo*no_of_nodes)/NUMCORES;j<((numerodehilo+1)*no_of_nodes)/NUMCORES;j++){
-     //if (icopy==1) printf(" %d-%d ",numerodehilo,j);
+      
+    for(j=__sync_fetch_and_add(&loopcounter,1);j<no_of_nodes;j=j=__sync_fetch_and_add(&loopcounter,1)){
+    //for(j=(numerodehilo*no_of_nodes)/NUMCORES;j<((numerodehilo+1)*no_of_nodes)/NUMCORES;j++){
       dxdy0=0;
       dxdy1=0;
       for (k=0;k<numerodehilo;k++) {
@@ -636,7 +638,6 @@ void *Hilo(void *Proc) {
       }
       MATRIX(*res, j, 0)+=dxdy0; /* Update positions */
       MATRIX(*res, j, 1)+=dxdy1;
-           //... y aqui se podria borrar el resto de dxdy
       if (minx && MATRIX(*res, j, 0) < VECTOR(*minx)[j]) {
         MATRIX(*res, j, 0) = VECTOR(*minx)[j];
       } else if (maxx && MATRIX(*res, j, 0) > VECTOR(*maxx)[j]) {
