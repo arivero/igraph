@@ -545,7 +545,7 @@ int igraph_layout_fruchterman_reingold(const igraph_t *graph, igraph_matrix_t *r
   pthread_spin_init(&dxdy_spin, 0);
   pthread_mutex_init(&iter_mutex,NULL);
   if (NUMCORES > 1) {
-  pthread_barrier_init(&post_reduce_barrier, NULL, NUMCORES+1);
+  pthread_barrier_init(&post_reduce_barrier, NULL, NUMCORES);
   pthread_barrier_init(&loop_barrier, NULL, NUMCORES+1);
   } else {
   pthread_barrier_init(&post_reduce_barrier, NULL, 1);
@@ -598,6 +598,7 @@ void *Hilo(void *Proc) {
     /* Calculate the attractive "force" */
  
    //IGRAPH_EIT_RESET(edgeit);
+   pthread_barrier_wait(&loop_barrier);
    edgeit=0; 
     //if (i==1) printf("%d",IGRAPH_EIT_SIZE(edgeit));
    loopcounter=0;
@@ -675,7 +676,7 @@ if (NUMCORES > 1) {
     if (i%10 == 0)
       IGRAPH_PROGRESS("Fruchterman-Reingold layout: ",
 		      100.0-100.0*i/niter, NULL);
-   pthread_barrier_wait(&post_reduce_barrier);
+   pthread_barrier_wait(&loop_barrier);
    IGRAPH_ALLOW_INTERRUPTION();
   }
   for(j=0;j<NUMCORES;j++) { rc=pthread_join(threads[j],NULL);
