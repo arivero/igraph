@@ -521,21 +521,7 @@ int igraph_layout_fruchterman_reingold(const igraph_t *graph, igraph_matrix_t *r
   IGRAPH_MATRIX_INIT_FINALLY(&dxdy, no_of_nodes, 2+2 * NUMCORES);
 
   int num_links=igraph_ecount(graph);
-  //igraph_eit_t edgeiterator[NUMCORES];
-  //to=0;
-  //for (k=0; k < NUMCORES; k++) {
-  //   from = to +1;
-  //   to = (num_links*(k+1))/NUMCORES;
-     //printf("from=%d,to=%d,",from-1,to-1); 
-  //    IGRAPH_CHECK(igraph_eit_create(graph, igraph_ess_seq(from-1, to), &edgeiterator[k]));
-  //    IGRAPH_FINALLY(igraph_eit_destroy, &edgeiterator[k]);
-  //} 
-   //  printf("\n"); 
-  //igraph_eit_t edgeit;
-  long int edgeit;
-  //IGRAPH_CHECK(igraph_eit_create(graph, igraph_ess_seq(0,num_links),&edgeit));
-  //IGRAPH_FINALLY(igraph_eit_destroy, &edgeit);
-
+  volatile long int edgeit =0;
 
   //quizas estas variables deberian declararse dentro del hilo, para que se instalen en su stack?
   epsilon=1E-6;
@@ -551,13 +537,13 @@ int igraph_layout_fruchterman_reingold(const igraph_t *graph, igraph_matrix_t *r
   }
 
 
-int loopcounter;
-int tcounter=0;
+  volatile int loopcounter=0;
 
 /*========================================================================*/    
 
 void *Hilo(void *Proc) {
     int i,j,k;
+    long int edge;
     igraph_real_t ded,ded2,xd,yd; /*t podriamos usarlo para no relanzar hilo?? */
     igraph_real_t rf,af;
     igraph_real_t t;
@@ -598,16 +584,10 @@ void *Hilo(void *Proc) {
     }
     /* Calculate the attractive "force" */
  
-
-   if (__sync_add_and_fetch(&tcounter,1)==NUMCORES) {
-      edgeit=0; 
-      loopcounter=0;
-      tcounter=0;
-   }
-   pthread_barrier_wait(&loop_barrier);  
-   /*printf("barr pass %d",numerodehilo);*/
-   long int edge;
-   for(edge=__sync_fetch_and_add(&edgeit,1);edge < num_links; edge=__sync_fetch_and_add(&edgeit,1)) {
+  
+   for(edge=__sync_fetch_and_add(&edgeit,1);edge < num_links;// edge=__sync_fetch_and_add(&edgeit,1)) {
+               ({ edge=edgeit; while(!__sync_bool_compare_and_swap(&edgeit,edge,edge+1)){edge=edgeit;}   })
+      ){
         igraph_real_t w= weight ? VECTOR(*weight)[ edge ] : 1.0;
         igraph_edge(graph, (igraph_integer_t) edge, &from, &to);
         //if (i==1) printf("from=%d,to=%d\n",from,to);
@@ -624,12 +604,17 @@ void *Hilo(void *Proc) {
         MATRIX(dxdy, k, 1 + 2 + numerodehilo*2)+=yd*af;
     }
 
-    /* Dampen motion, if needed, and move the points */
-
+   /*note we make sure that the general counters are separated from their loops by a barrierwait*/
+   loopcounter=0;
+   pthread_barrier_wait(&loop_barrier);
+   edgeit=0;
     /* Set the temperature (maximum move/iteration) */
     t=maxdelta*pow(i/(double)niter,coolexp);
-      
-    for(j=__sync_fetch_and_add(&loopcounter,1);j<no_of_nodes;j=__sync_fetch_and_add(&loopcounter,1)){
+    
+
+    for(j=__sync_fetch_and_add(&loopcounter,1);//j<no_of_nodes;//j=__sync_fetch_and_add(&loopcounter,1)){
+          j<no_of_nodes; ({j=loopcounter;while(!__sync_bool_compare_and_swap(&loopcounter,j,j+1)){j=loopcounter;}  })
+       ){
     //for(j=(numerodehilo*no_of_nodes)/NUMCORES;j<((numerodehilo+1)*no_of_nodes)/NUMCORES;j++){
       dxdy0=0;
       dxdy1=0;
@@ -658,7 +643,7 @@ void *Hilo(void *Proc) {
         MATRIX(*res, j, 1) = VECTOR(*maxy)[j];
       }
   }
-   //pthread_barrier_wait(&loop_barrier);
+   pthread_barrier_wait(&loop_barrier);
   }
   return NULL;
 }
@@ -678,6 +663,7 @@ if (NUMCORES > 1) {
 		      100.0-100.0*i/niter, NULL);
    pthread_barrier_wait(&loop_barrier);
    IGRAPH_ALLOW_INTERRUPTION();
+   pthread_barrier_wait(&loop_barrier);
   }
   for(j=0;j<NUMCORES;j++) { rc=pthread_join(threads[j],NULL);
                           if (rc) printf ("error en thread j=%d, rc=%d\n",j,rc);
