@@ -453,7 +453,6 @@ int igraph_layout_fruchterman_reingold(const igraph_t *graph, igraph_matrix_t *r
 				       const igraph_vector_t *maxy) {
   igraph_real_t frk,frk2,epsilon;
   long int i,j,k;
-  FILE *salida;
   
   int NUMCORES; 
   //pthread_mutex_t dxdy_mutex; // el PTHREAD_ADAPTIVE_MUTEX_INITIALIZER_NP no es mas rapido; 
@@ -477,9 +476,9 @@ int igraph_layout_fruchterman_reingold(const igraph_t *graph, igraph_matrix_t *r
 	NUMCORES=12;
      }
 
-	salida=fopen("/tmp/numcores.dat","wt");
-	fprintf(salida,"n=%d, numcores=%d\n",no_of_nodes,NUMCORES);
-	fclose(salida);
+	//salida=fopen("/tmp/numcores.dat","wt");
+	//fprintf(salida,"n=%d, numcores=%d\n",no_of_nodes,NUMCORES);
+	//fclose(salida);
 
   pthread_t threads[NUMCORES];
   int escaleraJ[NUMCORES];
