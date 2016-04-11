@@ -518,6 +518,21 @@ int igraph_layout_fruchterman_reingold(const igraph_t *graph, igraph_matrix_t *r
   if (!use_seed) {
     IGRAPH_CHECK(igraph_layout_random(graph, res));
   }
+
+  /*make sure that coordinates do not coincide*/
+  int colide=0; 
+  do { 
+    colide=0;
+    for (i=0;i<no_of_nodes;i++)
+      for (j=i+1;j<no_of_nodes;j++)
+        if ((MATRIX(*res, i, 0)==MATRIX(*res, j, 0)) && (MATRIX(*res, i, 1)==MATRIX(*res, j, 1) )) {
+          MATRIX(*res, i, 0)+=RNG_NORMAL(0,0.1);
+          MATRIX(*res, i, 1)+=RNG_NORMAL(0,0.1);
+          colide = 1; 
+        }
+  } while (colide==1);
+
+
   IGRAPH_MATRIX_INIT_FINALLY(&dxdy, no_of_nodes, 2+2 * NUMCORES);
 
   int num_links=igraph_ecount(graph);
@@ -602,9 +617,9 @@ void *Hilo(void *Proc) {
       yd=MATRIX(*res, j, 1)-MATRIX(*res, k, 1);
       ded2=(epsilon+xd*xd+yd*yd);  /* Get dyadic euclidean distance */
       ded=sqrt(ded2); 
-        af=ded/frk*w;   /* we divide by ded to Rescale differences to length 1 */
+      af=ded/frk*w;   /* we divide by ded to Rescale differences to length 1 */
       MATRIX(dxdy, j, 0 + 2 + numerodehilo*2)-=xd*af; /* Add to the position change vector */
-      MATRIX(dxdy, k, 0 + 2 + numerodehilo*2)+=xd*af; /*podriamos usar + 2*(!MONOHILO) + para ahorrar copia */
+      MATRIX(dxdy, k, 0 + 2 + numerodehilo*2)+=xd*af; /* + 2*(!MONOHILO)  */
       MATRIX(dxdy, j, 1 + 2 + numerodehilo*2)-=yd*af;
       MATRIX(dxdy, k, 1 + 2 + numerodehilo*2)+=yd*af;
       IGRAPH_EIT_NEXT(edgeit);
