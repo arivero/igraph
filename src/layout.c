@@ -551,6 +551,10 @@ int igraph_layout_fruchterman_reingold(const igraph_t *graph, igraph_matrix_t *r
   frk2=area/no_of_nodes; 
   frk=sqrt(frk2);
 
+  printf("\n area=%lf,maxdelta=%lf,coolexp=%lf,repulserad=%lf,use_seed=%d,frk=%lf\n",
+          area,maxdelta,coolexp,repulserad,use_seed,frk);
+
+
   pthread_spin_init(&dxdy_spin, 0);
   pthread_barrier_init(&post_reduce_barrier, NULL, NUMCORES);
   if (NUMCORES > 1) {
