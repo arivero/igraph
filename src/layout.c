@@ -459,12 +459,14 @@ int igraph_layout_fruchterman_reingold(const igraph_t *graph, igraph_matrix_t *r
    //la alternativa a spinlockes PTHREAD_MUTEX_ADAPTIVE_NP http://stackoverflow.com/questions/19863734/what-is-pthread-mutex-adaptive-np
   pthread_spinlock_t dxdy_spin;
   pthread_barrier_t post_reduce_barrier;
-  pthread_barrier_t post_move_barrier;
+  //pthread_barrier_t post_move_barrier;
   pthread_barrier_t loop_barrier;
  
   int rc;
     
   long int no_of_nodes=igraph_vcount(graph);
+  int num_links=igraph_ecount(graph);
+
 
   if (no_of_nodes<80) 
 	NUMCORES=1;
@@ -534,7 +536,6 @@ int igraph_layout_fruchterman_reingold(const igraph_t *graph, igraph_matrix_t *r
 
   IGRAPH_MATRIX_INIT_FINALLY(&dxdy, no_of_nodes, 2+2 * NUMCORES);
 
-  int num_links=igraph_ecount(graph);
   igraph_eit_t edgeiterator[NUMCORES];
   to=0;
   for (k=0; k < NUMCORES; k++) {
@@ -548,8 +549,35 @@ int igraph_layout_fruchterman_reingold(const igraph_t *graph, igraph_matrix_t *r
 
   //quizas estas variables deberian declararse dentro del hilo, para que se instalen en su stack?
   epsilon=1E-6;
-  frk2=area/no_of_nodes; 
-  frk=sqrt(frk2);
+  ////frk=sqrt(area/no_of_nodes); 
+
+  // Calcular automaticamente cosas
+  // Reescalamos el potencial para que el minimo de la fueza sea
+  // independiente del orden de magnitud de los pesos de las links 
+  double wmean =0.0;
+  int edge_c;
+  if ( area < 0.0) {
+    area =  no_of_nodes * no_of_nodes;  // * (-area)  so that -1.0 es sin escalar
+    repulserad= no_of_nodes*area;
+    //maxdelta=sqrt(area);
+    frk = sqrt(no_of_nodes);
+    for (edge_c=0; edge_c< num_links; edge_c++) {
+      wmean += weight ? VECTOR(*weight)[ edge_c ] : 1.0;
+    }
+    if (num_links > 0) {
+      wmean/=num_links;
+      frk = frk * pow(wmean,1/3.0);
+    }
+  } else {
+    frk=sqrt(area/no_of_nodes);
+  }
+
+  frk2=frk*frk;
+ 
+
+
+
+
 
   printf("\n area=%lf,maxdelta=%lf,coolexp=%lf,repulserad=%lf,use_seed=%d,frk=%lf\n",
           area,maxdelta,coolexp,repulserad,use_seed,frk);
@@ -580,8 +608,8 @@ void *Hilo(void *Proc) {
     //sched_setaffinity(0, sizeof(cpuset), &cpuset);
     igraph_eit_t edgeit=edgeiterator[numerodehilo];
     igraph_integer_t from, to;
-    int /*er, bool*/ MONOHILO;
-    MONOHILO = (NUMCORES==1);
+    //int /*er, bool*/ MONOHILO;
+    //MONOHILO = (NUMCORES==1);
 
     //printf("hilo %d\n",numerodehilo);
     for (i=niter;i>0;i--) {
@@ -677,7 +705,7 @@ igraph_matrix_null(&dxdy);
 
 if (NUMCORES > 1) {
   for(j=0;j<NUMCORES;j++){ rc=pthread_create(&threads[j],NULL,Hilo, (void *) j);
-                         if (rc) printf ("error creando thread j=%d, rc=%d\n",j,rc);
+                         if (rc) printf ("error creando thread j=%ld, rc=%d\n",j,rc);
                           }
   for (i=niter;i>0;i--) {
     /* Report progress in approx. every 100th step */
@@ -689,7 +717,7 @@ if (NUMCORES > 1) {
    IGRAPH_ALLOW_INTERRUPTION();
    }
   for(j=0;j<NUMCORES;j++) { rc=pthread_join(threads[j],NULL);
-                          if (rc) printf ("error en thread j=%d, rc=%d\n",j,rc);
+                          if (rc) printf ("error en thread j=%ld, rc=%d\n",j,rc);
                           }
 } else {
   Hilo(0);
